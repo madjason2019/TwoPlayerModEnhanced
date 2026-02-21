@@ -26,7 +26,7 @@ namespace TwoPlayerModEnhanced
 
         private void OnKeyDown(object sender, System.Windows.Forms.KeyEventArgs e)
         {
-            // Toggle mod with F11 (change if you want)
+            // Toggle mod with F11
             if (e.KeyCode == System.Windows.Forms.Keys.F11)
             {
                 modEnabled = !modEnabled;
@@ -56,7 +56,7 @@ namespace TwoPlayerModEnhanced
                 splitScreen.Enable(player1, player2);
             }
 
-            UI.Notify("TwoPlayerMod: Enabled with Split-Screen");
+            UI.Notify("TwoPlayerMod Enabled (Split-Screen Active)");
         }
 
         private void DisableMod()
@@ -64,7 +64,8 @@ namespace TwoPlayerModEnhanced
             splitScreen.Disable();
             CleanupPlayer2();
             modEnabled = false;
-            UI.Notify("TwoPlayerMod: Disabled");
+
+            UI.Notify("TwoPlayerMod Disabled");
         }
 
         private void SpawnPlayer2()
@@ -122,9 +123,7 @@ namespace TwoPlayerModEnhanced
             // Update split-screen cameras
             splitScreen.Update();
 
-            // Very simple Player 2 control placeholder:
-            // Here you’d normally read from your input system (DirectInput/XInput)
-            // and translate that into movement/tasks for player2.
+            // Basic placeholder for Player 2 movement
             BasicPlayer2Follow();
         }
 
@@ -133,7 +132,6 @@ namespace TwoPlayerModEnhanced
             if (player1 == null || player2 == null)
                 return;
 
-            // Simple behavior: keep Player 2 near Player 1 if too far away
             float distance = player1.Position.DistanceTo(player2.Position);
 
             if (distance > 10f)
@@ -142,6 +140,10 @@ namespace TwoPlayerModEnhanced
             }
         }
     }
+
+    // -------------------------
+    // Split-Screen System
+    // -------------------------
 
     public class SplitScreen
     {
