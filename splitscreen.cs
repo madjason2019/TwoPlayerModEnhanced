@@ -1,112 +1,89 @@
-using UnityEngine;
+using GTA;
+using GTA.Math;
+using GTA.Native;
 
 namespace TwoPlayerModEnhanced
 {
-    public class SplitScreen : MonoBehaviour
+    public class SplitScreen
     {
-        [Header("Player Objects")]
-        public GameObject player1;
-        public GameObject player2;
-
-        [Header("Camera Prefab")]
-        public Camera cameraPrefab;
-
         private Camera cam1;
         private Camera cam2;
 
-        [Header("Settings")]
-        public bool verticalSplit = true;   // true = left/right, false = top/bottom
-        public float gutterSize = 0.002f;   // small gap between screens
+        private Ped player1;
+        private Ped player2;
 
-        void Start()
+        private bool enabled = false;
+
+        public SplitScreen()
         {
+        }
+
+        public void Enable(Ped p1, Ped p2)
+        {
+            player1 = p1;
+            player2 = p2;
+
             if (player1 == null || player2 == null)
-            {
-                Debug.LogError("[SplitScreen] Players not assigned.");
                 return;
-            }
 
-            SetupCameras();
-            PositionCameras();
+            CreateCameras();
+            SetupViewports();
+
+            enabled = true;
         }
 
-        private void SetupCameras()
+        private void CreateCameras()
         {
-            // Create camera 1
-            cam1 = Instantiate(cameraPrefab);
-            cam1.name = "Player1Camera";
-            cam1.transform.SetParent(transform);
+            cam1 = World.CreateCamera(player1.Position + new Vector3(0, -4, 1.5f), Vector3.Zero, 60f);
+            cam2 = World.CreateCamera(player2.Position + new Vector3(0, -4, 1.5f), Vector3.Zero, 60f);
 
-            // Create camera 2
-            cam2 = Instantiate(cameraPrefab);
-            cam2.name = "Player2Camera";
-            cam2.transform.SetParent(transform);
+            cam1.IsActive = true;
+            cam2.IsActive = true;
 
-            UpdateViewports();
+            World.RenderingCamera = cam1;
         }
 
-        private void UpdateViewports()
+        private void SetupViewports()
         {
-            if (verticalSplit)
-            {
-                // Left camera
-                cam1.rect = new Rect(
-                    0f,
-                    0f,
-                    0.5f - gutterSize,
-                    1f
-                );
+            Function.Call(Hash.SET_SPLIT_SCREEN, true);
 
-                // Right camera
-                cam2.rect = new Rect(
-                    0.5f + gutterSize,
-                    0f,
-                    0.5f - gutterSize,
-                    1f
-                );
-            }
-            else
-            {
-                // Top camera
-                cam1.rect = new Rect(
-                    0f,
-                    0.5f + gutterSize,
-                    1f,
-                    0.5f - gutterSize
-                );
+            // Left side (Player 1)
+            Function.Call(Hash.SET_CAM_SPLIT_SCREEN_MULTIPLIER,
+                cam1.Handle, 0.0f, 0.0f, 0.5f, 1.0f);
 
-                // Bottom camera
-                cam2.rect = new Rect(
-                    0f,
-                    0f,
-                    1f,
-                    0.5f - gutterSize
-                );
-            }
+            // Right side (Player 2)
+            Function.Call(Hash.SET_CAM_SPLIT_SCREEN_MULTIPLIER,
+                cam2.Handle, 0.5f, 0.0f, 1.0f, 1.0f);
         }
 
-        private void PositionCameras()
+        public void Update()
         {
-            cam1.transform.position = player1.transform.position + new Vector3(0, 1.5f, -3f);
-            cam1.transform.LookAt(player1.transform);
+            if (!enabled)
+                return;
 
-            cam2.transform.position = player2.transform.position + new Vector3(0, 1.5f, -3f);
-            cam2.transform.LookAt(player2.transform);
-        }
-
-        void LateUpdate()
-        {
             if (player1 != null)
             {
-                cam1.transform.position = player1.transform.position + new Vector3(0, 1.5f, -3f);
-                cam1.transform.LookAt(player1.transform);
+                cam1.Position = player1.Position + new Vector3(0, -4, 1.5f);
+                cam1.PointAt(player1);
             }
 
             if (player2 != null)
             {
-                cam2.transform.position = player2.transform.position + new Vector3(0, 1.5f, -3f);
-                cam2.transform.LookAt(player2.transform);
+                cam2.Position = player2.Position + new Vector3(0, -4, 1.5f);
+                cam2.PointAt(player2);
             }
+        }
+
+        public void Disable()
+        {
+            enabled = false;
+
+            Function.Call(Hash.SET_SPLIT_SCREEN, false);
+
+            if (cam1 != null) cam1.Delete();
+            if (cam2 != null) cam2.Delete();
+
+            World.RenderingCamera = null;
         }
     }
 }
