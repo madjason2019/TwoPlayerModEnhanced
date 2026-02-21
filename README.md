@@ -6,8 +6,7 @@ This is a ScriptHookV .NET plugin for Grand Theft Auto V, which will enable you 
 The issues page should be primarily used for bug reports and enhancement ideas.
 
 ## Roadmap / todo
-* Fully implement player 2 functions
-* ...
+* Add Splitscreen and figure out camera controls 
 
 ## Requirements
 
