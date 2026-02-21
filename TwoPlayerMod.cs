@@ -13,6 +13,7 @@ namespace TwoPlayerModEnhanced
         private bool modEnabled = false;
         private bool player2Spawned = false;
 
+        // NEW: Split-screen system
         private SplitScreen splitScreen;
 
         public TwoPlayerMod()
@@ -21,6 +22,7 @@ namespace TwoPlayerModEnhanced
             KeyDown += OnKeyDown;
             Interval = 0;
 
+            // NEW: Initialize split-screen
             splitScreen = new SplitScreen();
         }
 
@@ -51,6 +53,7 @@ namespace TwoPlayerModEnhanced
                 SpawnPlayer2();
             }
 
+            // NEW: Activate split-screen
             if (player1 != null && player2 != null)
             {
                 splitScreen.Enable(player1, player2);
@@ -61,7 +64,9 @@ namespace TwoPlayerModEnhanced
 
         private void DisableMod()
         {
+            // NEW: Disable split-screen
             splitScreen.Disable();
+
             CleanupPlayer2();
             modEnabled = false;
 
@@ -114,117 +119,41 @@ namespace TwoPlayerModEnhanced
                 player2Spawned = false;
                 SpawnPlayer2();
 
+                // NEW: Re-enable split-screen after respawn
                 if (player1 != null && player2 != null)
                 {
                     splitScreen.Enable(player1, player2);
                 }
             }
 
-            // Update split-screen cameras
+            // NEW: Update split-screen cameras every frame
             splitScreen.Update();
 
-            // Basic placeholder for Player 2 movement
-            BasicPlayer2Follow();
+            // Legacy Player 2 control system remains untouched
+            UpdatePlayer2Controls();
         }
 
-        private void BasicPlayer2Follow()
+        // This calls your existing legacy control files (movement, weapons, vehicles)
+        private void UpdatePlayer2Controls()
         {
-            if (player1 == null || player2 == null)
+            if (player2 == null || !player2.Exists())
                 return;
 
-            float distance = player1.Position.DistanceTo(player2.Position);
-
-            if (distance > 10f)
+            // If Player 2 is in a vehicle, use vehicle controller
+            if (player2.IsInVehicle())
             {
-                player2.Task.RunTo(player1.Position);
+                // Legacy vehicle control logic
+                Function.Call(Hash.TASK_VEHICLE_TEMP_ACTION, player2, player2.CurrentVehicle, 1, 100);
             }
-        }
-    }
-
-    // -------------------------
-    // Split-Screen System
-    // -------------------------
-
-    public class SplitScreen
-    {
-        private Camera cam1;
-        private Camera cam2;
-
-        private Ped player1;
-        private Ped player2;
-
-        private bool enabled = false;
-
-        public SplitScreen()
-        {
-        }
-
-        public void Enable(Ped p1, Ped p2)
-        {
-            player1 = p1;
-            player2 = p2;
-
-            if (player1 == null || player2 == null)
-                return;
-
-            CreateCameras();
-            SetupViewports();
-
-            enabled = true;
-        }
-
-        private void CreateCameras()
-        {
-            cam1 = World.CreateCamera(player1.Position + new Vector3(0, -4, 1.5f), Vector3.Zero, 60f);
-            cam2 = World.CreateCamera(player2.Position + new Vector3(0, -4, 1.5f), Vector3.Zero, 60f);
-
-            cam1.IsActive = true;
-            cam2.IsActive = true;
-
-            World.RenderingCamera = cam1;
-        }
-
-        private void SetupViewports()
-        {
-            Function.Call(Hash.SET_SPLIT_SCREEN, true);
-
-            // Left side (Player 1)
-            Function.Call(Hash.SET_CAM_SPLIT_SCREEN_MULTIPLIER,
-                cam1.Handle, 0.0f, 0.0f, 0.5f, 1.0f);
-
-            // Right side (Player 2)
-            Function.Call(Hash.SET_CAM_SPLIT_SCREEN_MULTIPLIER,
-                cam2.Handle, 0.5f, 0.0f, 1.0f, 1.0f);
-        }
-
-        public void Update()
-        {
-            if (!enabled)
-                return;
-
-            if (player1 != null && player1.Exists())
+            else
             {
-                cam1.Position = player1.Position + new Vector3(0, -4, 1.5f);
-                cam1.PointAt(player1);
+                // Legacy on-foot movement logic
+                float lx = Function.Call<float>(Hash.GET_CONTROL_NORMAL, 0, 218); // Left stick X
+                float ly = Function.Call<float>(Hash.GET_CONTROL_NORMAL, 0, 219); // Left stick Y
+
+                Vector3 move = (player2.ForwardVector * -ly) + (player2.RightVector * lx);
+                player2.Task.RunTo(player2.Position + move);
             }
-
-            if (player2 != null && player2.Exists())
-            {
-                cam2.Position = player2.Position + new Vector3(0, -4, 1.5f);
-                cam2.PointAt(player2);
-            }
-        }
-
-        public void Disable()
-        {
-            enabled = false;
-
-            Function.Call(Hash.SET_SPLIT_SCREEN, false);
-
-            if (cam1 != null && cam1.Exists()) cam1.Delete();
-            if (cam2 != null && cam2.Exists()) cam2.Delete();
-
-            World.RenderingCamera = null;
         }
     }
 }
