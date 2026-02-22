@@ -1,159 +1,612 @@
-using System;
 using GTA;
 using GTA.Math;
 using GTA.Native;
+using SharpDX.DirectInput;
+using System;
+using NativeUI;
+using System.Windows.Forms;
+using System.Collections.Generic;
+using Benjamin94.Input;
+using Benjamin94;
+using SharpDX.XInput;
+using System.Linq;
 
-namespace TwoPlayerModEnhanced
+/// <summary>
+/// The main Script, this will handle all logic
+/// </summary>
+class TwoPlayerMod : Script
 {
-    public class TwoPlayerMod : Script
+    // for ini keys
+    public static string ScriptName = "TwoPlayerMod";
+    private const string ToggleMenuKey = "ToggleMenuKey";
+    private const string CharacterHashKey = "CharacterHash";
+    private const string ControllerKey = "Controller";
+    private const string CustomCameraKey = "CustomCamera";
+    private const string BlipSpriteKey = "BlipSprite";
+    private const string BlipColorKey = "BlipColor";
+    private const string EnabledKey = "Enabled";
+
+    // Player 1
+    private Player player;
+    public static Ped player1;
+
+    // PlayerPeds
+    public static List<PlayerPed> playerPeds = new List<PlayerPed>();
+
+    // Menu
+    private UIMenu menu;
+    private MenuPool menuPool = new MenuPool();
+
+    // Settings
+    private Keys toggleMenuKey = Keys.F11;
+
+    // camera
+    public static bool customCamera = false;
+    private Camera camera;
+
+    // players 
+    private readonly UserIndex[] userIndices = new UserIndex[] { UserIndex.Two, UserIndex.Three, UserIndex.Four };
+
+    public TwoPlayerMod()
     {
-        private Ped player1;
-        private Ped player2;
+        ScriptName = Name;
+        player = Game.Player;
+        player1 = player.Character;
+        player1.Task.ClearAll();
 
-        private bool modEnabled = false;
-        private bool player2Spawned = false;
+        LoadSettings();
+        SetupMenu();
 
-        // NEW: Split-screen system
-        private SplitScreen splitScreen;
+        KeyDown += TwoPlayerMod_KeyDown;
+        Tick += TwoPlayerMod_Tick;
+    }
 
-        public TwoPlayerMod()
+    /// <summary>
+    /// Loads the mod settings, if there is an error it will revert the file back to default
+    /// </summary>
+    private void LoadSettings()
+    {
+        try
         {
-            Tick += OnTick;
-            KeyDown += OnKeyDown;
-            Interval = 0;
+            toggleMenuKey = (Keys)new KeysConverter().ConvertFromString(Settings.GetValue(Name, ToggleMenuKey, Keys.F11.ToString()));
+        }
+        catch (Exception)
+        {
+            toggleMenuKey = Keys.F11;
+            UI.Notify("Failed to read '" + ToggleMenuKey + "', reverting to default " + ToggleMenuKey + " F11");
 
-            // NEW: Initialize split-screen
-            splitScreen = new SplitScreen();
+            Settings.SetValue(Name, ToggleMenuKey, Keys.F11.ToString());
+            Settings.Save();
         }
 
-        private void OnKeyDown(object sender, System.Windows.Forms.KeyEventArgs e)
+        try
         {
-            // Toggle mod with F11
-            if (e.KeyCode == System.Windows.Forms.Keys.F11)
-            {
-                modEnabled = !modEnabled;
+            customCamera = bool.Parse(Settings.GetValue(Name, CustomCameraKey, "False"));
+        }
+        catch (Exception)
+        {
+            customCamera = false;
+            UI.Notify("Failed to read '" + CustomCameraKey + "', reverting to default " + CustomCameraKey + " False");
 
-                if (modEnabled)
+            Settings.SetValue(Name, CustomCameraKey, "False");
+            Settings.Save();
+        }
+    }
+
+    /// <summary>
+    /// Determines if the mod is enabled or disabled
+    /// </summary>
+    /// <returns>true or false whether the mod is enabled</returns>
+    private bool Enabled()
+    {
+        return playerPeds.Count > 0;
+    }
+
+    /// <summary>
+    /// Sets up the NativeUI menu
+    /// </summary>
+    private void SetupMenu()
+    {
+        if (menuPool != null)
+        {
+            menuPool.ToList().ForEach(menu => { menu.Clear(); });
+        }
+
+        menu = new UIMenu("Two Player Mod", Enabled() ? "~g~Enabled" : "~r~Disabled");
+        menuPool.Add(menu);
+
+        UIMenuItem toggleItem = new UIMenuItem("Toggle mod", "Toggle Two Player mode");
+        toggleItem.Activated += ToggleMod_Activated;
+        menu.AddItem(toggleItem);
+
+        UIMenu allPlayersMenu = menuPool.AddSubMenu(menu, "Players");
+        menu.MenuItems.FirstOrDefault(item => { return item.Text.Equals("Players"); }).Description = "Configure players";
+
+        foreach (UserIndex player in userIndices)
+        {
+            bool check = bool.Parse(PlayerSettings.GetValue(player, EnabledKey, false.ToString()));
+
+            UIMenu playerMenu = menuPool.AddSubMenu(allPlayersMenu, "Player " + player);
+            UIMenuItem playerItem = allPlayersMenu.MenuItems.FirstOrDefault(item => { return item.Text.Equals("Player " + player); });
+
+            string controllerGuid = PlayerSettings.GetValue(player, ControllerKey, "");
+
+            playerItem.Description = "Configure player " + player;
+
+            if (!string.IsNullOrEmpty(controllerGuid))
+            {
+                playerItem.SetRightBadge(UIMenuItem.BadgeStyle.Star);
+            }
+
+            UIMenuCheckboxItem togglePlayerItem = new UIMenuCheckboxItem("Toggle player " + player, check, "Enables/disables this player");
+
+            togglePlayerItem.CheckboxEvent += (s, enabled) =>
+            {
+                PlayerSettings.SetValue(player, EnabledKey, enabled.ToString());
+
+                RefreshSubItems(togglePlayerItem, playerMenu, enabled);
+            };
+
+            playerMenu.AddItem(togglePlayerItem);
+
+            playerMenu.AddItem(ConstructSettingsListItem(player, "Character", "Select a character for player " + player, CharacterHashKey, PedHash.Trevor));
+            playerMenu.AddItem(ConstructSettingsListItem(player, "Blip sprite", "Select a blip sprite for player " + player, BlipSpriteKey, BlipSprite.Standard));
+            playerMenu.AddItem(ConstructSettingsListItem(player, "Blip color", "Select a blip color for player " + player, BlipColorKey, BlipColor.Green));
+
+            UIMenu controllerMenu = menuPool.AddSubMenu(playerMenu, "Assign controller");
+            playerMenu.MenuItems.FirstOrDefault(item => { return item.Text.Equals("Assign controller"); }).Description = "Assign controller to player " + player;
+
+            foreach (InputManager manager in InputManager.GetAvailableInputManagers())
+            {
+                UIMenuItem controllerItem = new UIMenuItem(manager.DeviceName, "Assign this controller to player " + player);
+
+                string guid = manager.DeviceGuid;
+
+                if (PlayerSettings.GetValue(player, ControllerKey, "").Equals(guid))
                 {
-                    EnableMod();
+                    controllerItem.SetRightBadge(UIMenuItem.BadgeStyle.Star);
+                }
+
+                if (manager is DirectInputManager)
+                {
+                    DirectInputManager directManager = (DirectInputManager)manager;
+                    bool configured = DirectInputManager.IsConfigured(directManager.device, GetIniFile());
+                    controllerItem.Enabled = configured;
+
+                    if (!configured)
+                    {
+                        controllerItem.Description = "Please configure this controller first from the main menu";
+                    }
+                }
+
+                controllerItem.Activated += (s, i) =>
+                {
+                    if (i.Enabled)
+                    {
+                        PlayerSettings.SetValue(player, ControllerKey, guid);
+
+                        controllerMenu.MenuItems.ForEach(item =>
+                        {
+                            if (item == controllerItem)
+                            {
+                                item.SetRightBadge(UIMenuItem.BadgeStyle.Star);
+                            }
+                            else
+                            {
+                                item.SetRightBadge(UIMenuItem.BadgeStyle.None);
+                            }
+                        });
+                    }
+                };
+
+                controllerMenu.AddItem(controllerItem);
+            }
+
+            RefreshSubItems(togglePlayerItem, playerMenu, check);
+        }
+
+        UIMenuCheckboxItem cameraItem = new UIMenuCheckboxItem("GTA:SA style camera", customCamera, "Enables/disables the GTA:SA style camera");
+        cameraItem.CheckboxEvent += (s, i) =>
+        {
+            customCamera = !customCamera;
+            Settings.SetValue(Name, CustomCameraKey, customCamera.ToString());
+            Settings.Save();
+        };
+        menu.AddItem(cameraItem);
+
+        UIMenu controllersMenu = menuPool.AddSubMenu(menu, "Configure controllers");
+        menu.MenuItems.FirstOrDefault(item => { return item.Text.Equals("Configure controllers"); }).Description = "Configure controllers before assigning them to players";
+        foreach (Joystick stick in DirectInputManager.GetDevices())
+        {
+            UIMenuItem stickItem = new UIMenuItem(stick.Information.ProductName, "Configure " + stick.Information.ProductName);
+
+            controllersMenu.AddItem(stickItem);
+            stickItem.Activated += (s, i) =>
+            {
+                ControllerWizard wizard = new ControllerWizard(stick);
+                bool success = wizard.StartConfiguration(GetIniFile());
+                if (success)
+                {
+                    UI.Notify("Controller successfully configured, you can now assign this controller");
                 }
                 else
                 {
-                    DisableMod();
+                    UI.Notify("Controller configuration canceled, please configure your controller before playing");
                 }
-            }
+                SetupMenu();
+            };
         }
 
-        private void EnableMod()
-        {
-            player1 = Game.Player.Character;
+        menu.RefreshIndex();
+    }
 
-            if (!player2Spawned)
+    /// <summary>
+    /// Refreshes all items in the UIMenu except the parentItem
+    /// </summary>
+    /// <param name="parentItem">The parent UIMenuItem to ignore</param>
+    /// <param name="menu">UIMenu</param>
+    /// <param name="enabled">Whether to enable or disable the sub items</param>
+    private void RefreshSubItems(UIMenuItem parentItem, UIMenu menu, bool enabled)
+    {
+        foreach (UIMenuItem item in menu.MenuItems)
+        {
+            if (!item.Equals(parentItem))
             {
-                SpawnPlayer2();
+                item.Enabled = enabled;
             }
+        }
+    }
 
-            // NEW: Activate split-screen
-            if (player1 != null && player2 != null)
+    /// <summary>
+    /// Constructs a new UIMenuListItem with automatic handling of selected value
+    /// </summary>
+    /// <typeparam name="TEnum">The type of the enum</typeparam>
+    /// <param name="player">The </param>
+    /// <param name="text">The menu item text</param>
+    /// <param name="description">The menu item description</param>
+    /// <param name="settingsKey">The settings key</param>
+    /// <param name="defaultValue">The initial selected value</param>
+    /// <returns>A fully working UIMenuListItem with automatic saving</returns>
+    private UIMenuListItem ConstructSettingsListItem<TEnum>(UserIndex player, string text, string description, string settingsKey, TEnum defaultValue)
+    {
+        List<dynamic> items = GetDynamicEnumList<TEnum>();
+
+        TEnum value = PlayerSettings.GetEnumValue<TEnum>(player, settingsKey, defaultValue.ToString());
+
+        UIMenuListItem menuItem = new UIMenuListItem(text, items, items.IndexOf(value.ToString()), description);
+        menuItem.OnListChanged += (s, i) =>
+        {
+            if (s.Enabled)
             {
-                splitScreen.Enable(player1, player2);
+                TEnum selectedItem = Enum.Parse(typeof(TEnum), s.IndexToItem(s.Index));
+                PlayerSettings.SetValue(player, settingsKey, selectedItem.ToString());
             }
+        };
+        return menuItem;
+    }
 
-            UI.Notify("TwoPlayerMod Enabled (Split-Screen Active)");
+    /// <summary>
+    /// This method will handle entering vehicles
+    /// </summary>
+    /// <param name="ped">Target Ped</param>
+    public static void HandleEnterVehicle(Ped ped)
+    {
+        Vehicle v = World.GetClosestVehicle(ped.Position, 15);
+        if (v == null)
+        {
+            return;
+        }
+        Ped driver = v.GetPedOnSeat(VehicleSeat.Driver);
+
+        if (driver != null && driver.IsPlayerPed())
+        {
+            ped.Task.EnterVehicle(v, VehicleSeat.Any);
+        }
+        else
+        {
+            if (driver != null)
+            {
+                driver.Delete();
+            }
+            ped.Task.EnterVehicle(v, VehicleSeat.Any);
+        }
+    }
+
+    /// <summary>
+    /// Helper method to get all values of an Enum for displaying in a menu
+    /// </summary>
+    /// <param name="type">Type of the Enum</param>
+    /// <returns>Sorted list of all possible given Enum values</returns>
+    private List<dynamic> GetDynamicEnumList<TEnum>()
+    {
+        List<dynamic> values = new List<dynamic>();
+
+        foreach (Enum pedHash in Enum.GetValues(typeof(TEnum)))
+        {
+            values.Add(pedHash.ToString());
         }
 
-        private void DisableMod()
+        values.Sort();
+        return values;
+    }
+
+    /// <summary>
+    /// Helper method to get the INI file
+    /// </summary>
+    /// <returns>"scripts//" + Name + ".ini"</returns>
+    private string GetIniFile()
+    {
+        return "scripts//" + Name + ".ini";
+    }
+
+    /// <summary>
+    /// Gets called by NativeUI when the user selects "Toggle mod" in the menu
+    /// </summary>
+    private void ToggleMod_Activated(UIMenu sender, UIMenuItem selectedItem)
+    {
+        if (!Enabled())
         {
-            // NEW: Disable split-screen
-            splitScreen.Disable();
+            UI.ShowSubtitle("Like this mod? Please consider donating!", 10000);
+            SetupPlayerPeds();
 
-            CleanupPlayer2();
-            modEnabled = false;
-
-            UI.Notify("TwoPlayerMod Disabled");
-        }
-
-        private void SpawnPlayer2()
-        {
-            if (player2 != null && player2.Exists())
+            if (playerPeds.Count == 0)
+            {
+                UI.Notify("Please assign a controller to at least one player");
+                UI.Notify("Also make sure you have configured at least one controller");
                 return;
-
-            player1 = Game.Player.Character;
-
-            Vector3 spawnPos = player1.Position + player1.ForwardVector * 2.0f;
-            player2 = World.CreatePed(PedHash.Michael, spawnPos);
-
-            if (player2 != null)
-            {
-                player2.Health = 200;
-                player2.Armor = 100;
-                player2.CanSwitchWeapons = true;
-                player2.Task.ClearAllImmediately();
-                player2Spawned = true;
             }
+
+            SetupCamera();
         }
-
-        private void CleanupPlayer2()
+        else
         {
-            if (player2 != null && player2.Exists())
-            {
-                player2.MarkAsNoLongerNeeded();
-                player2.Delete();
-            }
-
-            player2Spawned = false;
+            Clean();
         }
+        menu.Subtitle.Caption = Enabled() ? "~g~Enabled" : "~r~Disabled";
+    }
 
-        private void OnTick(object sender, EventArgs e)
+    /// <summary>
+    /// Sets up all correctly configured PlayerPed
+    /// </summary>
+    private void SetupPlayerPeds()
+    {
+        foreach (UserIndex player in userIndices)
         {
-            if (!modEnabled)
-                return;
-
-            if (player1 == null || !player1.Exists())
+            if (bool.Parse(PlayerSettings.GetValue(player, EnabledKey, false.ToString())))
             {
-                player1 = Game.Player.Character;
-            }
+                string guid = PlayerSettings.GetValue(player, ControllerKey, "");
 
-            if (player2 == null || !player2.Exists())
-            {
-                player2Spawned = false;
-                SpawnPlayer2();
-
-                // NEW: Re-enable split-screen after respawn
-                if (player1 != null && player2 != null)
+                foreach (InputManager input in InputManager.GetAvailableInputManagers())
                 {
-                    splitScreen.Enable(player1, player2);
+                    if (input.DeviceGuid.Equals(guid))
+                    {
+                        InputManager manager = input;
+                        if (input is DirectInputManager)
+                        {
+                            manager = DirectInputManager.LoadConfig(((DirectInputManager)input).device, GetIniFile());
+                        }
+
+                        PedHash characterHash = PlayerSettings.GetEnumValue<PedHash>(player, CharacterHashKey, PedHash.Trevor.ToString());
+                        BlipSprite blipSprite = PlayerSettings.GetEnumValue<BlipSprite>(player, BlipSpriteKey, BlipSprite.Standard.ToString());
+                        BlipColor blipColor = PlayerSettings.GetEnumValue<BlipColor>(player, BlipColorKey, BlipColor.Green.ToString());
+
+                        PlayerPed playerPed = new PlayerPed(player, characterHash, blipSprite, blipColor, player1, manager);
+                        playerPeds.Add(playerPed);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// This method will setup the camera system
+    /// </summary>
+    private void SetupCamera()
+    {
+        Function.Call(Hash.LOCK_MINIMAP_ANGLE, 0);
+        camera = World.CreateCamera(player1.GetOffsetInWorldCoords(new Vector3(0, 10, 10)), Vector3.Zero, GameplayCamera.FieldOfView);
+    }
+
+    /// <summary>
+    /// This method is overridden so we can cleanup the script
+    /// </summary>
+    protected override void Dispose(bool A_0)
+    {
+        Clean();
+        base.Dispose(A_0);
+    }
+
+    /// <summary>
+    /// Toggles the menu
+    /// </summary>
+    private void TwoPlayerMod_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.KeyCode == toggleMenuKey)
+        {
+            menu.Visible = !menu.Visible;
+        }
+    }
+
+
+    /// <summary>
+    /// Cleans up the script, deletes Player2 and cleans the InputManager system
+    /// </summary>
+    private void Clean()
+    {
+        Function.Call(Hash.UNLOCK_MINIMAP_ANGLE);
+
+        CleanCamera();
+        CleanUpPlayerPeds();
+    }
+
+    /// <summary>
+    /// Cleans up all PlayerPeds
+    /// </summary>
+    private void CleanUpPlayerPeds()
+    {
+        playerPeds.ForEach((playerPed => { playerPed.Clean(); }));
+        playerPeds.Clear();
+        if (player1 != null)
+        {
+            player1.Task.ClearAllImmediately();
+        }
+    }
+
+    /// <summary>
+    /// This method will return the center of given vectors
+    /// </summary>
+    /// <param name="vectors">Vector3 A</param>
+    /// <returns>The center Vector3 of the two given Vector3s</returns>
+    public Vector3 CenterOfVectors(params Vector3[] vectors)
+    {
+        Vector3 center = Vector3.Zero;
+        foreach (Vector3 vector in vectors)
+        {
+            center += vector;
+        }
+
+        return center / vectors.Length;
+    }
+
+    private bool resetWalking = false;
+
+    private void TwoPlayerMod_Tick(object sender, EventArgs e)
+    {
+        menuPool.ProcessMenus();
+
+        if (Enabled())
+        {
+            if (!Player1Available())
+            {
+                CleanCamera();
+
+                while (!Player1Available() || Function.Call<bool>(Hash.IS_SCREEN_FADING_IN))
+                {
+                    Wait(1000);
+                }
+
+                playerPeds.ForEach(playerPed =>
+                {
+                    playerPed.Respawn();
+                    Wait(500);
+                });
+
+                SetupCamera();
+            }
+
+            playerPeds.ForEach((playerPed => { playerPed.Tick(); }));
+
+            UpdateCamera();
+
+            if (customCamera && player1.IsOnFoot)
+            {
+                if (Game.IsControlPressed(0, GTA.Control.Jump))
+                {
+                    player1.Task.Climb();
+                }
+
+                Vector2 offset = Vector2.Zero;
+
+                if (Game.IsControlPressed(0, GTA.Control.MoveUpOnly))
+                {
+                    offset.Y++;
+                }
+
+                if (Game.IsControlPressed(0, GTA.Control.MoveLeftOnly))
+                {
+                    offset.X--;
+                }
+
+                if (Game.IsControlPressed(0, GTA.Control.MoveRightOnly))
+                {
+                    offset.X++;
+                }
+
+                if (Game.IsControlPressed(0, GTA.Control.MoveDownOnly))
+                {
+                    offset.Y--;
+                }
+
+                if (offset != Vector2.Zero)
+                {
+                    if (Game.IsControlPressed(0, GTA.Control.Sprint))
+                    {
+                        // needed for running
+                        offset *= 10;
+                    }
+                    Vector3 dest = Vector3.Zero;
+                    dest = player1.Position - new Vector3(offset.X, offset.Y, 0);
+                    player1.Task.RunTo(dest, true, -1);
+                    resetWalking = true;
+                }
+                else if (resetWalking)
+                {
+                    player1.Task.ClearAll();
+                    resetWalking = false;
                 }
             }
 
-            // NEW: Update split-screen cameras every frame
-            splitScreen.Update();
+            if (Game.IsControlJustReleased(0, GTA.Control.NextCamera))
+            {
+                customCamera = !customCamera;
+            }
 
-            // Legacy Player 2 control system remains untouched
-            UpdatePlayer2Controls();
+            // for letting player get in a vehicle
+            if (player1.IsOnFoot && Game.IsControlJustReleased(0, GTA.Control.VehicleExit))
+            {
+                HandleEnterVehicle(player1);
+            }
         }
+    }
 
-        // This calls your existing legacy control files (movement, weapons, vehicles)
-        private void UpdatePlayer2Controls()
+    /// <summary>
+    /// Cleans the Camera system
+    /// </summary>
+    private void CleanCamera()
+    {
+        World.DestroyAllCameras();
+        World.RenderingCamera = null;
+    }
+
+    /// <summary>
+    /// Helper method to check if Player 1 is still normally available
+    /// </summary>
+    /// <returns>True when Player 1 is still normally available to play</returns>
+    private bool Player1Available()
+    {
+        return !player1.IsDead && !Function.Call<bool>(Hash.IS_PLAYER_BEING_ARRESTED, player, true) && !Function.Call<bool>(Hash.IS_PLAYER_BEING_ARRESTED, player, false) && !Function.Call<bool>(Hash.IS_SCREEN_FADING_OUT);
+    }
+
+    /// <summary>
+    /// This will update the camera 
+    /// </summary>
+    private void UpdateCamera()
+    {
+        // if all in same vehicle
+        if (playerPeds.TrueForAll(p => { return p.Ped.CurrentVehicle != null && p.Ped.CurrentVehicle == player1.CurrentVehicle; }))
         {
-            if (player2 == null || !player2.Exists())
-                return;
+            World.RenderingCamera = null;
+        }
+        else if (customCamera)
+        {
+            PlayerPed furthestPlayer = playerPeds.OrderByDescending(playerPed => { return player1.Position.DistanceTo(playerPed.Ped.Position); }).FirstOrDefault();
 
-            // If Player 2 is in a vehicle, use vehicle controller
-            if (player2.IsInVehicle())
-            {
-                // Legacy vehicle control logic
-                Function.Call(Hash.TASK_VEHICLE_TEMP_ACTION, player2, player2.CurrentVehicle, 1, 100);
-            }
-            else
-            {
-                // Legacy on-foot movement logic
-                float lx = Function.Call<float>(Hash.GET_CONTROL_NORMAL, 0, 218); // Left stick X
-                float ly = Function.Call<float>(Hash.GET_CONTROL_NORMAL, 0, 219); // Left stick Y
+            Vector3 center = CenterOfVectors(player1.Position, furthestPlayer.Ped.Position);
 
-                Vector3 move = (player2.ForwardVector * -ly) + (player2.RightVector * lx);
-                player2.Task.RunTo(player2.Position + move);
-            }
+            World.RenderingCamera = camera;
+            camera.PointAt(center);
+
+            float dist = furthestPlayer.Ped.Position.DistanceTo(player1.Position);
+
+            center.Y += 5f + (dist / 1.6f);
+            center.Z += 2f + (dist / 1.4f);
+
+            camera.Position = center;
+        }
+        else
+        {
+            World.RenderingCamera = null;
         }
     }
 }
